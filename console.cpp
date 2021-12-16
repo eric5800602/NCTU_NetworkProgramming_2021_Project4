@@ -22,7 +22,7 @@ struct client_info{
 };
 
 boost::asio::io_service io_context;
-client_info client[5];
+client_info client[6];
 
 
 void output_shell(int index,string content){
@@ -63,38 +63,40 @@ class session
 			: client_socket(std::move(socket_))
 		{
       if(host.length() == 0){
-        valid = false;
         return;
       }
-      memset(data_,0,max_length);
       id = index;
       filename = "./test_case/"+f;
       file_input.open(filename,ios::in);
       all_msg = "";
+      flag = false;
       //if ( file_input.fail() ) cerr << "open fail" << endl;
-      add_row(index,host,port);
 		}
 		void start()
 		{
 			do_read();
 		}
-    bool valid;
 
 	private:
 		void do_read()
 		{
 			auto self(shared_from_this());
+      if(flag) return;
       client_socket.async_read_some(boost::asio::buffer(data_, max_length),
           [this,self](boost::system::error_code ec, std::size_t length){
           if (!ec){
-            all_msg += data_;
+            for(size_t i = 0;i < length;++i){
+              if(data_[i]!='\0'){
+                all_msg += data_[i];
+              }
+            }
             memset(data_,0,length);
+            output_shell(id,all_msg);
             size_t pos;
             if((pos = all_msg.find("%")) != string::npos){
-              output_shell(id,all_msg);
-              all_msg = "";
               do_write();
             }
+            all_msg = "";
             do_read();
           }
           });
@@ -112,13 +114,12 @@ class session
       cerr << "input = "<< input << endl;
       output_command(id,input);
       boost::asio::async_write(client_socket, boost::asio::buffer(input.c_str(), input.length()),
-        [this,self](boost::system::error_code ec, std::size_t /*length*/){
-          if (!ec){
-             /*
-            io_context[id].stop();
-            io_context[id].reset();
-            cerr << "test3" << endl;
-            return;*/
+        [this,self,input](boost::system::error_code ec, std::size_t /*length*/){
+        if (!ec){
+            if(input == "exit"){
+              flag = true;
+              client_socket.close();
+            }
         }else{
           cerr << ec << endl;
         }
@@ -131,6 +132,7 @@ class session
     string all_msg;
     ifstream file_input;
     string filename;
+    bool flag;
     int id;
 };
 
@@ -194,11 +196,28 @@ class server
     server()
     :resolve(io_context)
     {
+      if(client[5].host.length() !=0){
+        tcp::resolver::query query(client[5].host, client[5].file);
+        resolve.async_resolve(query,
+        boost::bind(&server::proxy_connection, this,boost::asio::placeholders::error,boost::asio::placeholders::iterator ));
+        return;
+      }
       for(int i = 0;i < 5;i++){
         if(client[i].host.length() !=0){
           tcp::resolver::query query(client[i].host, client[i].port);
           resolve.async_resolve(query,
           boost::bind(&server::connection, this,i,boost::asio::placeholders::error,boost::asio::placeholders::iterator ));
+        }
+      }
+    }
+    void proxy_connection(const boost::system::error_code& err,const tcp::resolver::iterator it){
+      if(!err){
+        for(int i = 0;i < 5;i++){
+          if(client[i].host.length() !=0){
+            socket_[i] = new tcp::socket(io_context);
+            (*socket_[i]).async_connect(*it,
+            boost::bind(&server::create_proxy_session, this,i,boost::asio::placeholders::error,it));
+          }
         }
       }
     }
@@ -216,9 +235,47 @@ class server
           std::make_shared<session>(std::move(*socket_[i]),i,client[i].host, client[i].port,client[i].file)->start();
       }
     }
+    void create_proxy_session(const int i,const boost::system::error_code& err,const tcp::resolver::iterator it){
+      if (!err)
+      {
+        size_t j = 0;
+        unsigned char socks_request[200];
+        memset(socks_request,'\0',200);
+        socks_request[0] = 4;
+        socks_request[1] = 1;
+        socks_request[2] = stoi(client[i].port)/256;
+        socks_request[3] = stoi(client[i].port)%256;
+        socks_request[4] = 0;
+        socks_request[5] = 0;
+        socks_request[6] = 0;
+        socks_request[7] = 1;
+        socks_request[8] = 0;
+        for(j = 0;j < client[i].host.length();j++){
+          socks_request[9+j] = client[i].host[j];
+        }
+        socks_request[9+j] = 0;
+        (*socket_[i]).async_send(boost::asio::buffer(socks_request, sizeof(unsigned char)*200),
+          [this, i](boost::system::error_code err, size_t len) {
+              if(!err) {
+                  (*socket_[i]).async_read_some(boost::asio::buffer(socks_reply, 8), [this, i](boost::system::error_code err, size_t len) {
+                      if(!err) {
+                        if(socks_reply[1] == 90){
+                          std::make_shared<session>(std::move(*socket_[i]),i,client[i].host, client[i].port,client[i].file)->start();
+                        }
+                        else{
+                          return;
+                        }
+                      }else
+                          cerr << err << "\n";
+                  });
+              }
+          });
+      }
+    }
   private:
     tcp::socket *socket_[5];
     tcp::resolver resolve;
+    unsigned char socks_reply[8];
 };
 
 int main(int argc, char* argv[]){
@@ -232,7 +289,7 @@ int main(int argc, char* argv[]){
     // string host = string(argv[1]);
     // string port = string(argv[2]);
     // string filename = string(argv[3]);
-    // example: h0=nplinux3.cs.nctu.edu.tw&p0=9898&f0=t2.txt&h1=&p1=&f1=&h2=&p2=&f2=&h3=&p3=&f3=&h4=&p4=&f4=
+    // example: h0=&p0=&f0=&h1=&p1=&f1=&h2=&p2=&f2=&h3=&p3=&f3=&h4=&p4=&f4=&sh=&sp=
     print_header();
     string QUERY_STRING = getenv("QUERY_STRING");
     size_t pos = 0;
@@ -243,7 +300,6 @@ int main(int argc, char* argv[]){
       size_t pos2 = 0;
       if((pos2 = QUERY_STRING.find("=")+1) != std::string::npos){
         token = QUERY_STRING.substr(pos2, pos-3);
-        if(token.length() == 0)break;
         switch(index){
           case 0:
             client[i].host = token;
@@ -272,10 +328,10 @@ int main(int argc, char* argv[]){
       i++;
     }
     ///cerr << getenv("QUERY_STRING") << endl;
-    for(int j = 0;j < i;j++){
-      cerr << "host: "<<client[j].host << endl;
-      cerr << "port: "<<client[j].port << endl;
-      cerr << "file: "<<client[j].file << endl;
+    //cerr << i << endl;
+    for(int j = 0;j < 5;j++){
+      if(client[j].host.length()!=0)
+        add_row(j,client[j].host,client[j].port);
     }
     server server_obj;
     io_context.run();

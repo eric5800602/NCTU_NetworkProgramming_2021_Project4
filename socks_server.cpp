@@ -38,7 +38,7 @@ class session
 		std::string client;
 		std::string client_port;
 		session(tcp::socket socket)
-			: socket_(std::move(socket)),http_socket(io_context),resolve(io_context),bind_acceptor(io_context)
+			: socket_(std::move(socket)),http_socket(io_context),resolve(io_context),bind_acceptor(io_context,tcp::endpoint(tcp::v4(), 0))
 		{
 			memset( domain, '\0', sizeof(char)*200 );
 		}
@@ -109,11 +109,9 @@ class session
 					});
 		}
 		void bind_write(){
-			unsigned short os_free_port(0);
-			tcp::endpoint endPoint(tcp::endpoint(tcp::v4(), os_free_port));
-			bind_acceptor.open(endPoint.protocol());
+			bind_acceptor.open(tcp::endpoint(tcp::v4(), 0).protocol());
 			bind_acceptor.set_option(tcp::acceptor::reuse_address(true));
-			bind_acceptor.bind(endPoint);
+			bind_acceptor.bind(tcp::endpoint(tcp::v4(), 0));
 			bind_acceptor.listen();
 			bind_port = bind_acceptor.local_endpoint().port();
 			status_str[2] = (unsigned char)(bind_port/256);
@@ -130,11 +128,7 @@ class session
 										if(!err) {
 											clientread(3);
 										}
-										else
-											cerr << err.message() << endl;
 									});
-							else
-								cerr << err.message() << endl;
 						});
 					}
 					else{
@@ -174,6 +168,28 @@ class session
 		}
 		void clientread(int case_num){
 			auto self(shared_from_this());
+			if (case_num & 2) {
+				http_socket.async_read_some(boost::asio::buffer(httpdata_, max_length),
+				[this, self](boost::system::error_code err, std::size_t length) {
+					if (!err){
+						write_data(2, length);
+					}
+					else if (err == boost::asio::error::eof) {
+						socket_.async_send(boost::asio::buffer(httpdata_, length),
+						[this,self,err](boost::system::error_code ec, std::size_t len) {
+							if (ec){
+								cerr <<  ec.message() << endl;
+							}
+							//cerr << "socket_ = " << httpdata_ << endl;
+							socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
+						});
+						//cerr << "httpsocket close" << endl;
+					}
+					else {
+						cerr <<  err.message() << endl;
+					} 
+				});
+			}
 			if (case_num & 1) {
 				socket_.async_read_some(boost::asio::buffer(clientdata_, max_length), 
 					[this, self](boost::system::error_code err, std::size_t length) {
@@ -198,29 +214,7 @@ class session
 						
 				});
 			}
-			if (case_num & 2) {
-				http_socket.async_read_some(boost::asio::buffer(httpdata_, max_length),
-				[this, self](boost::system::error_code err, std::size_t length) {
-					if (!err){
-						//cerr << "http read = " << httpdata_ << endl;
-						write_data(2, length);
-					}
-					else if (err == boost::asio::error::eof) {
-						socket_.async_send(boost::asio::buffer(httpdata_, length),
-						[this,self,err](boost::system::error_code ec, std::size_t len) {
-							if (ec){
-								cerr <<  ec.message() << endl;
-							}
-							//cerr << "socket_ = " << httpdata_ << endl;
-							socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send);
-						});
-						//cerr << "httpsocket close" << endl;
-					}
-					else {
-						cerr <<  err.message() << endl;
-					} 
-				});
-			}
+			
 		}
 		void write_data(int case_num, std::size_t len) {
 			auto self(shared_from_this());
@@ -241,9 +235,8 @@ class session
 			case 2:
 				socket_.async_send(
 				boost::asio::buffer(httpdata_, len),
-				[this, self,len](boost::system::error_code err, std::size_t length) {
+				[this, self](boost::system::error_code err, std::size_t length) {
 					if (!err) {
-						//cerr <<"port = "<<bind_port <<" send to socket = " << httpdata_ << endl;
 						memset( httpdata_, '\0', max_length );
 						clientread(2);
 					}
