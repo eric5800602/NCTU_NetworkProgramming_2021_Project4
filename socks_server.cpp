@@ -15,6 +15,7 @@
 #include <boost/asio.hpp>
 #include <boost/bind/bind.hpp>
 #include <string>
+#include <fstream>
 #include <sstream>
 
 using namespace std;
@@ -27,31 +28,21 @@ class session
 : public std::enable_shared_from_this<session>
 {
 	public:
-		char REQUEST_METHOD[100];
-		char REQUEST_URI[1124];
-		char QUERY_STRING[1024];
-		char SERVER_PROTOCOL[100];
-		char HTTP_HOST[100];
 		unsigned char status_str[200];
-		std::string server;
-		std::string server_port;
-		std::string client;
-		std::string client_port;
+		std::string SrcIP;
+		std::string SrcPORT;
+		std::string DstIP;
+		std::string DstPORT; //printf("<D_PORT>: %u\n",DSTPORT);
+		std::string cmd;
+		ifstream file_input;
+		bool accept;
+		bool print_console;
 		session(tcp::socket socket)
 			: socket_(std::move(socket)),http_socket(io_context),resolve(io_context),bind_acceptor(io_context,tcp::endpoint(tcp::v4(), 0))
 		{
 			memset( domain, '\0', sizeof(char)*200 );
-		}
-		void BOOST_SETENV(){
-			setenv("REQUEST_METHOD",REQUEST_METHOD,1);
-			setenv("REQUEST_URI",REQUEST_URI,1);
-			setenv("QUERY_STRING",QUERY_STRING,1);
-			setenv("SERVER_PROTOCOL",SERVER_PROTOCOL,1);
-			setenv("HTTP_HOST",HTTP_HOST,1);
-			setenv("SERVER_ADDR",server.c_str(),1);
-			setenv("SERVER_PORT",server_port.c_str(),1);
-			setenv("REMOTE_ADDR",client.c_str(),1);
-			setenv("REMOTE_PORT",client_port.c_str(),1);
+			print_console = false;
+			file_input.open("socks.conf",ios::in);
 		}
 		void start()
 		{
@@ -59,6 +50,53 @@ class session
 		}
 
 	private:
+		void checkfirewall(){
+			string input;
+			while(getline(file_input,input)){
+				if(input[7] == 'c' && cmd == "CONNECT"){
+					input = input.substr(9);
+					stringstream X(input);
+					stringstream Y(DstIP);
+					//cerr << DstIP << endl;
+					string permit,dst;
+					int times = 0;
+					while (getline(X, permit, '.') && getline(Y,dst,'.')) { 
+						//cerr << "test" << endl;
+						if(permit == "*"){
+							accept = true;
+							break;
+						}
+						else if(permit == dst){
+							times++;
+							continue;
+						}else{
+							break;
+						}
+					}
+					if(times == 4) accept = true;
+				}
+				else if(input[7] == 'b' && cmd == "BIND"){
+					input = input.substr(9);
+					stringstream X(input);
+					stringstream Y(DstIP);
+					string permit,dst;
+					int times = 0;
+					while (getline(X, permit, '.') && getline(Y,dst,'.')) { 
+						if(permit == "*"){
+							accept = true;
+							break;
+						}
+						else if(permit == dst){
+							times++;
+							continue;
+						}else{
+							break;
+						}
+					}
+					if(times == 4) accept = true;
+				}
+			}
+		}
 		void do_read()
 		{
 			auto self(shared_from_this());
@@ -69,21 +107,26 @@ class session
 						//unsigned int DSTIP = (data_[7] << 24) | (data_[6] << 16) | (data_[5] << 8) | data_[4] ;
 						boost::asio::ip::tcp::endpoint remote_ep = socket_.remote_endpoint();
 						boost::asio::ip::address remote_ad = remote_ep.address();
-						string client = remote_ad.to_string();
+						SrcIP = remote_ad.to_string();
 						std::stringstream ss;
 						ss << remote_ep.port();
-						string cmd;
 						cmd = (data_[1] == 1) ? "CONNECT" : "BIND";
+						SrcPORT = ss.str();
+						sprintf(dip,"%u.%u.%u.%u",data_[4],data_[5],data_[6],data_[7]);
+						DstIP = dip;
+						/*
 						printf("<S_IP>: %s\n",client.c_str());
 						printf("<S_PORT>: %s\n",ss.str().c_str());
 						printf("<D_IP>: %u.%u.%u.%u\n",data_[4],data_[5],data_[6],data_[7]);
 						sprintf(dip,"%u.%u.%u.%u",data_[4],data_[5],data_[6],data_[7]);
 						printf("<D_PORT>: %u\n",DSTPORT);
 						printf("<Command>: %s\n",cmd.c_str());
-						/* Need to check accept or not */
+						// Need to check accept or not
 						printf("<Reply>: Accept\n");
 						fflush(stdout);
+						*/
 						/* Extract domain name */
+						accept = false;
 						if(data_[4] == 0){
 							int i,j=0;
 							for(i = 8;i < max_length;i++){
@@ -98,8 +141,13 @@ class session
 						}
 						memset( status_str, '\0', sizeof(unsigned char)*200 );
 						status_str[0] = 0;
-						status_str[1] = 90;
 						if(data_[1] == 2){
+							checkfirewall();
+							if(accept){
+								status_str[1] = 90;
+							}else{
+								status_str[1] = 91;
+							}
 							bind_write();
 							return;
 						}
@@ -109,9 +157,8 @@ class session
 					});
 		}
 		void bind_write(){
-			bind_acceptor.open(tcp::endpoint(tcp::v4(), 0).protocol());
 			bind_acceptor.set_option(tcp::acceptor::reuse_address(true));
-			bind_acceptor.bind(tcp::endpoint(tcp::v4(), 0));
+			//bind_acceptor.bind(tcp::endpoint(tcp::v4(), 0));
 			bind_acceptor.listen();
 			bind_port = bind_acceptor.local_endpoint().port();
 			status_str[2] = (unsigned char)(bind_port/256);
@@ -129,6 +176,18 @@ class session
 											clientread(3);
 										}
 									});
+							else{
+								status_str[1] = 91;
+								print_console_msg();
+								socket_.async_send( boost::asio::buffer(status_str, 8),
+									[this,self](boost::system::error_code err, std::size_t len){
+										if(!err) {
+											socket_.close();
+											http_socket.close();
+											exit(0);
+										}
+									});
+							}
 						});
 					}
 					else{
@@ -139,35 +198,64 @@ class session
 		void do_write(std::size_t length)
 		{
 			auto self(shared_from_this());
-			boost::asio::async_write(socket_, boost::asio::buffer(status_str, sizeof(unsigned char)*200),
-					[this, self](boost::system::error_code ec, std::size_t /*length*/){
-					if (!ec){
-						string domain_name = string(domain);
-						if(domain_name.empty()){
-							boost::asio::ip::tcp::endpoint dst_endpoint(boost::asio::ip::address::from_string(string(dip)),DSTPORT);
-							http_socket.async_connect(dst_endpoint, boost::bind(&session::redirector, self,3,boost::asio::placeholders::error));
-						}
-						else{
-							std::stringstream ss;
-							ss << DSTPORT;
-							tcp::resolver::query query(domain_name, ss.str());
-							resolve.async_resolve(query,boost::bind(&session::connection, self,boost::asio::placeholders::error,boost::asio::placeholders::iterator ));
-						}
-					}
-					});
+			string domain_name = string(domain);
+			if(domain_name.empty()){
+				boost::asio::ip::tcp::endpoint dst_endpoint(boost::asio::ip::address::from_string(string(dip)),DSTPORT);
+				checkfirewall();
+				if(accept){
+					status_str[1] = 90;
+					http_socket.async_connect(dst_endpoint, boost::bind(&session::redirector, self,3,boost::asio::placeholders::error));
+				}else{
+					status_str[1] = 91;
+					print_console_msg();
+				}
+			}
+			else{
+				std::stringstream ss;
+				ss << DSTPORT;
+				tcp::resolver::query query(domain_name, ss.str());
+				resolve.async_resolve(query,boost::bind(&session::connection, self,boost::asio::placeholders::error,boost::asio::placeholders::iterator ));
+			}
 		}
 		void connection(const boost::system::error_code& err,const tcp::resolver::iterator it){
 			auto self(shared_from_this());
 			if (!err)
 			{
-				http_socket.async_connect(*it, boost::bind(&session::redirector, self,3,boost::asio::placeholders::error));
+				boost::asio::ip::tcp::endpoint end = (*it);
+				DstIP = end.address().to_string();
+				checkfirewall();
+				if(accept){
+					status_str[1] = 90;
+					http_socket.async_connect(*it, boost::bind(&session::redirector, self,3,boost::asio::placeholders::error));
+				}else{
+					status_str[1] = 91;
+					print_console_msg();
+				}
+			}
+		}
+		void print_console_msg(){
+			print_console = true;
+			string result = accept ? "<Reply>: Accept\n" : "<Reply>: Reject\n";
+			printf("<S_IP>: %s\n<S_PORT>: %s\n<D_IP>: %s\n<D_PORT>: %u\n<Command>: %s\n%s",
+				SrcIP.c_str(),SrcPORT.c_str(),DstIP.c_str(),DSTPORT,cmd.c_str(),result.c_str());
+			fflush(stdout);
+			if(!accept){
+				socket_.close();
+				exit(0);
 			}
 		}
 		void redirector(int num,const boost::system::error_code& err){
-			clientread(num);
+			auto self(shared_from_this());
+			boost::asio::async_write(socket_, boost::asio::buffer(status_str, sizeof(unsigned char)*200),
+					[this, self,num](boost::system::error_code ec, std::size_t /*length*/){
+					if (!ec){
+						clientread(num);
+					}
+					});
 		}
 		void clientread(int case_num){
 			auto self(shared_from_this());
+			if(!print_console) print_console_msg();
 			if (case_num & 2) {
 				http_socket.async_read_some(boost::asio::buffer(httpdata_, max_length),
 				[this, self](boost::system::error_code err, std::size_t length) {

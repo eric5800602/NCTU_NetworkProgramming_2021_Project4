@@ -10,6 +10,9 @@ all: socks_server.cpp console.cpp
 	$(CXX) console.cpp -o ~/public_html/hw4.cgi $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
 	cp ~/public_html/hw4.cgi ./hw4.cgi
 
+socks_server: socks_server.cpp
+	$(CXX) socks_server.cpp -o socks_server $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
+
 clean:
 	rm -f socks_server
 	rm -f console.cgi
