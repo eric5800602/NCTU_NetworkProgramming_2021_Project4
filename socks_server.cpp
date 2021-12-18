@@ -338,7 +338,7 @@ class session
 		tcp::socket socket_;
 		tcp::socket http_socket;
 		tcp::resolver resolve;
-		enum { max_length = 20 };
+		enum { max_length = 200 };
 		unsigned char data_[max_length];
 		char clientdata_[max_length];
 		char httpdata_[max_length];
