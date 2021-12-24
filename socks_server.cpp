@@ -329,6 +329,7 @@ class session
 				// });
 				// clientdata_[len] = '\0';
 				http_socket.send(boost::asio::buffer(clientdata_, len));
+				usleep(10);
 				clientread(1);
 				break;
 			case 2:
@@ -347,6 +348,7 @@ class session
 				// httpdata_[len] = '\0';
 				socket_.send(
 				boost::asio::buffer(httpdata_, len));
+				usleep(10);
 				clientread(2);
 				break;
 			}
