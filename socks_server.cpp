@@ -165,6 +165,7 @@ class session
 			bind_port = bind_acceptor.local_endpoint().port();
 			status_str[2] = (unsigned char)(bind_port/256);
 			status_str[3] = (unsigned char)(bind_port%256);
+			//printf("bind_port = %u\n",bind_port);
 			auto self(shared_from_this());
 			socket_.async_send( boost::asio::buffer(status_str, 8),
 				[this,self](boost::system::error_code err, std::size_t length_){
@@ -316,47 +317,38 @@ class session
 			switch(case_num) {
 			case 1:
 				//clientdata_[len] = '\0';
-				// http_socket.async_send(
-				// boost::asio::buffer(clientdata_, len),
-				// [this, self,len](boost::system::error_code err, std::size_t length) {
-				// 	if (!err){
-				// 		memset(clientdata_,0,200);
-				// 		clientread(1);
-				// 	}
-				// 	else {
-				// 		cerr << err.message() << endl;
-				// 	} 
-				// });
-				// clientdata_[len] = '\0';
-				http_socket.send(boost::asio::buffer(clientdata_, len));
-				usleep(10);
-				clientread(1);
+				async_write(http_socket,
+				boost::asio::buffer(clientdata_, len),
+				[this, self,len](boost::system::error_code err, std::size_t length) {
+					if (!err){
+						memset(clientdata_,0,max_length);
+						clientread(1);
+					}
+					else {
+						cerr << err.message() << endl;
+					} 
+				});
 				break;
 			case 2:
 				//httpdata_[len] = '\0';
-				// socket_.async_send(
-				// boost::asio::buffer(httpdata_, len),
-				// [this, self](boost::system::error_code err, std::size_t length) {
-				// 	if (!err) {
-				// 		memset(httpdata_,0,200);
-				// 		clientread(2);
-				// 	}
-				// 	else {
-				// 		cerr << err.message() << endl;
-				// 	} 
-				// });
-				// httpdata_[len] = '\0';
-				socket_.send(
-				boost::asio::buffer(httpdata_, len));
-				usleep(10);
-				clientread(2);
+				async_write(socket_,
+				boost::asio::buffer(httpdata_, len),
+				[this, self](boost::system::error_code err, std::size_t length) {
+					if (!err) {
+						memset(httpdata_,0,max_length);
+						clientread(2);
+					}
+					else {
+						cerr << err.message() << endl;
+					} 
+				});
 				break;
 			}
 		}
 		tcp::socket socket_;
 		tcp::socket http_socket;
 		tcp::resolver resolve;
-		enum { max_length = 200 };
+		enum { max_length = 1024 };
 		unsigned char data_[max_length];
 		char clientdata_[max_length];
 		char httpdata_[max_length];
